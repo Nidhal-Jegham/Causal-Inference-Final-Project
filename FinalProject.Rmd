@@ -1,0 +1,437 @@
+---
+title: "Final Project Causal"
+author: "Nidhal Jegham"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE, warning=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+library(fixest)
+library(did)
+library(bacondecomp)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(modelsummary)
+library(patchwork)
+```
+
+
+
+## Preparing data
+
+```{r}
+df <- read.csv("C:/Users/jegha/OneDrive/Desktop/URI M1 S2/STA592 Causal/simulated_panel_data.csv")
+
+df$cohort     <- ifelse(is.infinite(df$adoption_time), 0, df$adoption_time)
+df$event_time <- ifelse(is.infinite(df$adoption_time), NA,
+                        df$time - df$adoption_time)
+
+print(paste0("Units:   ", n_distinct(df$id)))
+print(paste0("Periods: ", n_distinct(df$time)))
+print(table(df$cohort))
+print(paste0("True ATT (all treated):  ", round(mean(df$Treatment_effect[df$D == 1]), 4)))
+print(paste0("True ATT cohort g=40:    ", round(mean(df$Treatment_effect[df$D == 1 & df$cohort == 40]), 4)))
+print(paste0("True ATT cohort g=60:    ", round(mean(df$Treatment_effect[df$D == 1 & df$cohort == 60]), 4)))
+```
+
+# Outcome Trends by Group
+
+```{r}
+trend_data <- df %>%
+  group_by(time, group) %>%
+  summarise(Y_mean = mean(Y), .groups = "drop")
+
+p_trends<-ggplot(trend_data, aes(x = time, y = Y_mean,
+                       color = group, linetype = group)) +
+  geom_line(linewidth = 0.8) +
+  geom_vline(xintercept = 40, linetype = "dashed", color = "gray40") +
+  geom_vline(xintercept = 60, linetype = "dotted", color = "gray40") +
+  annotate("text", x = 41, y = max(trend_data$Y_mean) * 0.97,
+           label = "g=40", hjust = 0, size = 3.2, color = "gray30") +
+  annotate("text", x = 61, y = max(trend_data$Y_mean) * 0.97,
+           label = "g=60", hjust = 0, size = 3.2, color = "gray30") +
+  scale_color_manual(
+    values = c("control" = "black", "treated_1" = "#E41A1C", "treated_2" = "#377EB8"),
+    labels = c("Never-treated", "Cohort g=40", "Cohort g=60")) +
+  scale_linetype_manual(
+    values = c("control" = "solid", "treated_1" = "solid", "treated_2" = "solid"),
+    labels = c("Never-treated", "Cohort g=40", "Cohort g=60")) +
+  labs(title = "Mean Outcome Over Time by Group",
+       x = "Time", y = "Mean Y", color = "", linetype = "") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom", panel.grid.minor = element_blank())
+
+p_trends
+
+ggsave("fig_trends.png", p_trends, width = 7, height = 4)
+
+```
+
+## TWFE Method
+
+```{r}
+twfe <- feols(Y ~ D | id + time,
+              data = df,
+              vcov = ~id)
+
+summary(twfe)
+
+twfe_coef <- as.numeric(coef(twfe)["D"])
+twfe_se   <- as.numeric(se(twfe)["D"])
+true_att  <- mean(df$Treatment_effect[df$D == 1])
+
+print(paste0("TWFE estimate: ", round(twfe_coef, 4)))
+print(paste0("True ATT:      ", round(true_att,  4)))
+print(paste0("Bias:          ", round(twfe_coef - true_att, 4)))
+```
+
+```{r}
+df_es <- df %>% filter(!is.na(event_time) | group == "control")
+
+twfe_es <- feols(Y ~ i(event_time, ref = -1) | id + time,
+                 data = df_es,
+                 vcov = ~id)
+
+twfe_es_coef <- coef(twfe_es)
+twfe_es_ci   <- confint(twfe_es)
+
+twfe_es_df <- data.frame(
+  event_time = as.numeric(gsub("event_time::", "", names(twfe_es_coef))),
+  estimate   = as.numeric(twfe_es_coef),
+  conf.low   = as.numeric(twfe_es_ci[, 1]),
+  conf.high  = as.numeric(twfe_es_ci[, 2])
+)
+
+p_twfe_es <- ggplot(twfe_es_df, aes(x = event_time, y = estimate)) +
+  geom_point(size = 0.8) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.3) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = -0.5, linetype = "dashed", color = "gray50") +
+  labs(title = "TWFE Event Study",
+       x = "Event Time", y = "Estimate") +
+  theme_minimal(base_size = 12)
+p_twfe_es
+
+```
+
+The TWFE estimate is 2.279 (SE = 0.127, $p < 0.001$), compared to the true ATT
+of 2.768, yielding a downward bias of -0.489 (approximately 18%). Despite being
+highly statistically significant, the estimate is meaningfully incorrect. This
+bias arises because TWFE pools all $2\times2$ DiD comparisons, including those
+that use already-treated units as controls. This problem will be addressed through
+Goodman-Bacon decomposition.
+
+## Goodman-Bacon Decomposition Method
+
+```{r}
+df_bacon <- df %>%
+  filter(cohort != 0) %>%                  
+  bind_rows(df %>% filter(cohort == 0)) %>%
+  select(id, time, Y, D)
+
+bacon_out <- bacon(Y ~ D,
+                   data      = df_bacon,
+                   id_var    = "id",
+                   time_var  = "time")
+
+print(paste0("Bacon weighted avg: ", round(sum(bacon_out$estimate * bacon_out$weight), 4)))
+print(paste0("TWFE estimate:      ", round(twfe_coef, 4)))
+
+ggplot(bacon_out, aes(x = weight, y = estimate, shape = type, color = type)) +
+  geom_point(size = 3) +
+  geom_hline(yintercept = true_att, linetype = "dashed", color = "gray40") +
+  annotate("text", x = max(bacon_out$weight) * 0.5,
+           y = true_att + 0.1,
+           label = "True ATT", size = 3.2, color = "gray40") +
+  labs(title = "Goodman-Bacon Decomposition",
+       x = "Weight", y = "2x2 DiD Estimate",
+       shape = "Comparison", color = "Comparison") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom", panel.grid.minor = element_blank())
+```
+The Goodman-Bacon decomposition breaks the TWFE estimate of 2.279 into three
+$2\times2$ comparisons. The dominant comparison is treated vs.\ never-treated
+(weight = 0.800, estimate = 2.537), which is clean and close to the true ATT.
+The problematic comparison is later vs.\ earlier treated (weight = 0.103,
+estimate = 0.034), where cohort $g=60$ uses the already-treated cohort $g=40$
+as a control. tHIS comparison severely underestimates the true
+effect. The earlier vs.\ later treated comparison (weight = 0.098, estimate =
+2.529) is less distorted. The weighted average of these three components
+exactly recovers the TWFE estimate of 2.279, confirming that the downward bias
+is driven by the later vs.\ earlier treated comparison receiving non-trivial
+weight with a near-zero estimate.
+
+
+## Callaway-Sant'Anna Method
+
+```{r}
+cs <- att_gt(
+  yname         = "Y",
+  tname         = "time",
+  idname        = "id",
+  gname         = "cohort",
+  xformla       = ~ x1 + x2 + x3,
+  control_group = "nevertreated",
+  data          = df,
+  est_method    = "reg"
+)
+
+
+```
+
+```{r}
+cs_overall <- aggte(cs, type = "simple")
+summary(cs_overall)
+
+cs_cohort <- aggte(cs, type = "group")
+summary(cs_cohort)
+
+cs_es <- aggte(cs, type = "dynamic", na.rm = TRUE)
+```
+
+```{r}
+p_cs_es <- ggdid(cs_es,
+                 title = "Callaway-Sant'Anna Event Study",
+                 xlab  = "Event Time",
+                 ylab  = "ATT")
+
+ggsave("fig_cs_es.png", p_cs_es, width = 7, height = 4)
+p_cs_es
+```
+
+The Callaway-Sant'Anna estimator, using never-treated units as the control group
+and conditioning on covariates $x_1$, $x_2$, $x_3$, produces three levels of
+aggregation. The overall ATT is 2.341 (SE = 0.218, 95\% CI: [1.915, 2.768]),
+close to the true value of 2.768 and a clear improvement over the TWFE estimate
+of 2.279. At the cohort level, the estimated ATT for cohort $g=40$ is 3.088
+(SE = 0.262) against a true value of 3.556, and for cohort $g=60$ is 1.230
+(SE = 0.234) against a true value of 1.597. Both cohort estimates are
+statistically significant and directionally correct, with remaining gaps
+attributable to finite-sample estimation error.
+
+The event-study aggregation confirms two key features of the DGP. First,
+all pre-treatment coefficients (event times $-58$ through $-1$) are small and
+statistically indistinguishable from zero, supporting the parallel trends
+assumption. Second, post-treatment estimates increase monotonically with event
+time from 1.054 at event time 0 to 4.788 at event time 58, consistent with
+the linearly growing treatment effects embedded in the simulation. This dynamic
+pattern is entirely missed by the single TWFE coefficient, underscoring the
+value of the event-study approach.
+
+## Sun-Abraham Method
+
+
+```{r}
+sa <- feols(Y ~ sunab(adoption_time, time) | id + time,
+            data = df,
+            vcov = ~id)
+
+
+sa_agg <- aggregate(sa, agg = "ATT")
+sa_agg
+
+```
+
+```{r}
+sa_coef <- coef(sa)
+sa_ci   <- confint(sa)
+
+sa_es_df <- data.frame(
+  event_time = as.numeric(gsub("time::", "", names(sa_coef))),
+  estimate   = as.numeric(sa_coef),
+  conf.low   = as.numeric(sa_ci[, 1]),
+  conf.high  = as.numeric(sa_ci[, 2])
+)
+
+p_sa <- ggplot(sa_es_df, aes(x = event_time, y = estimate)) +
+  geom_point(size = 0.8) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.3) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = -0.5, linetype = "dashed", color = "gray50") +
+  labs(title = "Sun-Abraham Event Study",
+       x = "Event Time", y = "Estimate") +
+  theme_minimal(base_size = 12)
+
+ggsave("fig_sa_es.png", p_sa, width = 7, height = 4)
+```
+
+
+
+
+
+The Sun-Abraham estimator yields an overall ATT of 2.315 (SE $= 0.189$, $p < 0.001$), against a true value of 2.768, for a bias of $-0.453$. The interaction-weighted event study reveals the same dynamic structure recovered by Callaway-Sant'Anna: all pre-treatment coefficients are small and most are statistically indistinguishable from zero, and post-treatment estimates grow monotonically from 1.068 at event time 0 to 4.699 at event time 58. A handful of pre-treatment coefficients reach nominal significance, but their magnitudes are small relative to the post-treatment estimates, and no systematic trend is visible, consistent with the parallel trends assumption holding in the DGP. The close agreement between the Sun-Abraham and Callaway-Sant'Anna event-study profiles cross-validates both estimators.
+
+## Overlay Event-Study Comparison
+
+```{r}
+true_es <- df %>%
+  filter(D == 1) %>%
+  group_by(event_time) %>%
+  summarise(estimate = mean(Treatment_effect), .groups = "drop") %>%
+  mutate(method = "True ATT", conf.low = estimate, conf.high = estimate)
+
+cs_es_df <- data.frame(
+  event_time = cs_es$egt,
+  estimate   = cs_es$att.egt,
+  conf.low   = cs_es$att.egt - 1.96 * cs_es$se.egt,
+  conf.high  = cs_es$att.egt + 1.96 * cs_es$se.egt,
+  method     = "Callaway-Sant'Anna"
+)
+
+twfe_es_coef <- coef(twfe_es)
+twfe_es_ci   <- confint(twfe_es)
+
+twfe_es_df <- data.frame(
+  event_time = as.numeric(gsub("event_time::", "", names(twfe_es_coef))),
+  estimate   = as.numeric(twfe_es_coef),
+  conf.low   = as.numeric(twfe_es_ci[, 1]),
+  conf.high  = as.numeric(twfe_es_ci[, 2]),
+  method     = "TWFE"
+)
+sa_coef <- coef(sa)
+sa_ci   <- confint(sa)
+
+sa_es_df <- data.frame(
+  event_time = as.numeric(gsub("time::", "", names(sa_coef))),
+  estimate   = as.numeric(sa_coef),
+  conf.low   = as.numeric(sa_ci[, 1]),
+  conf.high  = as.numeric(sa_ci[, 2]),
+  method     = "Sun-Abraham"
+)
+
+combined_es <- bind_rows(true_es, cs_es_df, twfe_es_df, sa_es_df) %>%
+  filter(event_time >= -10, event_time <= 40)
+
+ggplot(combined_es, aes(x = event_time, y = estimate,
+                         color = method, linetype = method)) +
+  geom_line(linewidth = 0.8) +
+  geom_ribbon(
+    aes(ymin = conf.low, ymax = conf.high, fill = method),
+    alpha = 0.1, color = NA,
+    data = combined_es %>% filter(method != "True ATT")
+  ) +
+  geom_vline(xintercept = -0.5, linetype = "dashed", color = "gray50") +
+  geom_hline(yintercept = 0,    linetype = "dotted",  color = "gray50") +
+  scale_color_manual(values = c(
+    "True ATT"           = "black",
+    "TWFE"               = "#E41A1C",
+    "Callaway-Sant'Anna" = "#377EB8",
+    "Sun-Abraham"        = "#4DAF4A")) +
+  scale_linetype_manual(values = c(
+    "True ATT"           = "solid",
+    "TWFE"               = "longdash",
+    "Callaway-Sant'Anna" = "solid",
+    "Sun-Abraham"        = "twodash")) +
+  scale_fill_manual(
+    values = c("True ATT" = NA, "TWFE" = "#E41A1C",
+               "Callaway-Sant'Anna" = "#377EB8", "Sun-Abraham" = "#4DAF4A"),
+    guide = "none") +
+  labs(title = "Event-Study Comparison",
+       x = "Event Time", y = "Estimated ATT",
+       color = "", linetype = "") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom", panel.grid.minor = element_blank())
+```
+
+## Summary Comparison Table
+
+
+
+```{r}
+true_overall <- mean(df$Treatment_effect[df$D == 1])
+true_g40     <- mean(df$Treatment_effect[df$D == 1 & df$cohort == 40])
+true_g60     <- mean(df$Treatment_effect[df$D == 1 & df$cohort == 60])
+
+cs_overall_est <- cs_overall$overall.att
+cs_overall_se_ <- cs_overall$overall.se
+cs_g40_est     <- cs_cohort$att.egt[cs_cohort$egt == 40]
+cs_g60_est     <- cs_cohort$att.egt[cs_cohort$egt == 60]
+cs_g40_se_     <- cs_cohort$se.egt[cs_cohort$egt == 40]
+cs_g60_se_     <- cs_cohort$se.egt[cs_cohort$egt == 60]
+
+sa_overall_est <- sa_agg["ATT", "Estimate"]
+sa_overall_se_ <- sa_agg["ATT", "Std. Error"]
+
+results_table <- data.frame(
+  Method       = c("True ATT", "TWFE", "Callaway-Sant'Anna", "Sun-Abraham"),
+  Overall_Est  = round(c(true_overall, twfe_coef,       cs_overall_est, sa_overall_est), 3),
+  Overall_SE   = round(c(NA,           twfe_se,         cs_overall_se_, sa_overall_se_), 3),
+  Overall_Bias = round(c(0,
+                          twfe_coef       - true_overall,
+                          cs_overall_est  - true_overall,
+                          sa_overall_est  - true_overall), 3),
+  g40_Est      = round(c(true_g40, NA, cs_g40_est, NA), 3),
+  g40_SE       = round(c(NA,       NA, cs_g40_se_, NA), 3),
+  g40_Bias     = round(c(0,        NA, cs_g40_est - true_g40, NA), 3),
+  g60_Est      = round(c(true_g60, NA, cs_g60_est, NA), 3),
+  g60_SE       = round(c(NA,       NA, cs_g60_se_, NA), 3),
+  g60_Bias     = round(c(0,        NA, cs_g60_est - true_g60, NA), 3)
+)
+
+
+results_table
+```
+
+
+This table summarizes the ATT estimates across all three methods against the known
+true values. At the aggregate level, all three estimators underestimate the true
+ATT of 2.768, with biases of $-0.489$ (TWFE), $-0.453$ (Sun-Abraham), and
+$-0.427$ (Callaway-Sant'Anna). The differences in overall bias are modest,
+reflecting the fact that aggregate estimates obscure the heterogeneity across
+cohorts. The key distinction emerges at the cohort level, where
+Callaway-Sant'Anna recovers estimates of 3.088 for cohort $g=40$ and 1.230 for
+cohort $g=60$, both statistically significant and directionally correct relative
+to the true values of 3.556 and 1.597 respectively. TWFE and Sun-Abraham do not
+produce cohort-specific aggregates in this form. The remaining bias in the CS
+cohort estimates ($-0.468$ and $-0.367$) is attributable to finite-sample
+estimation error rather than a failure of identification, as the pre-trend tests
+confirm the parallel trends assumption holds. Overall, the table illustrates that
+while all methods recover the broad direction of the treatment effect, only
+Callaway-Sant'Anna reveals the substantial heterogeneity across adoption cohorts
+that TWFE obscures.
+
+## CS Cohort-Specific ATT Plot
+
+
+```{r}
+p_cs_cohort <- ggdid(cs, ylim = c(-1, 7),
+                     title = "ATT(g,t): Callaway-Sant'Anna by Cohort") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 6))
+p_cs_cohort
+
+ggsave("fig_cs_cohort.png", p_cs_cohort, width = 9, height = 5)
+```
+
+
+## Appendix
+
+### Callaway-Sant'Anna Method Tables
+
+
+```{r}
+summary(cs)
+```
+
+
+
+
+```{r}
+summary(cs_es)
+
+```
+
+
+## Sun-Abraham Method Table
+
+```{r}
+summary(sa)
+
+```
+
