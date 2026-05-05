@@ -121,12 +121,8 @@ p_twfe_es
 
 ```
 
-The TWFE estimate is 2.279 (SE = 0.127, $p < 0.001$), compared to the true ATT
-of 2.768, yielding a downward bias of -0.489 (approximately 18%). Despite being
-highly statistically significant, the estimate is meaningfully incorrect. This
-bias arises because TWFE pools all $2\times2$ DiD comparisons, including those
-that use already-treated units as controls. This problem will be addressed through
-Goodman-Bacon decomposition.
+The TWFE estimate is 2.279 (SE $= 0.127$, $p < 0.001$), compared to the true ATT of 2.768, yielding a downward bias of $-0.489$ (approximately 18\%). Despite being highly statistically significant, the estimate is meaningfully incorrect. This bias arises because TWFE pools all $2\times2$ DiD comparisons, including those that use already-treated units as controls, as formalized by the Goodman-Bacon decomposition below. The TWFE event study additionally exhibits a pronounced downward slope in the pre-treatment period, with coefficients as large as $\sim 8$ at event time $-60$. This is not a genuine pre-trend violation. Under staggered adoption with heterogeneous treatment effects, the TWFE pre-period coefficients are contaminated by treatment effect heterogeneity itself: already-treated units used as implicit controls have experienced growing treatment effects, which mechanically distorts the pre-period estimates.
+
 
 ## Goodman-Bacon Decomposition Method
 
@@ -206,24 +202,9 @@ ggsave("fig_cs_es.png", p_cs_es, width = 7, height = 4)
 p_cs_es
 ```
 
-The Callaway-Sant'Anna estimator, using never-treated units as the control group
-and conditioning on covariates $x_1$, $x_2$, $x_3$, produces three levels of
-aggregation. The overall ATT is 2.341 (SE = 0.218, 95\% CI: [1.915, 2.768]),
-close to the true value of 2.768 and a clear improvement over the TWFE estimate
-of 2.279. At the cohort level, the estimated ATT for cohort $g=40$ is 3.088
-(SE = 0.262) against a true value of 3.556, and for cohort $g=60$ is 1.230
-(SE = 0.234) against a true value of 1.597. Both cohort estimates are
-statistically significant and directionally correct, with remaining gaps
-attributable to finite-sample estimation error.
+The Callaway-Sant'Anna estimator, using never-treated units as the control group and conditioning on covariates $x_1$, $x_2$, $x_3$, produces three levels of aggregation. The simple aggregation yields an overall ATT of 2.341 (SE $= 0.218$, 95\% CI: [1.915, 2.768]), while the dynamic aggregation yields 2.638 (SE $= 0.186$, 95\% CI: [2.272, 3.003]), substantially closer to the true value of 2.768. The difference arises because the dynamic aggregation upweights later event-time cells where treatment effects are larger, while the simple aggregation is dominated by the more numerous early post-treatment observations where effects are smaller. Both are valid estimands; the dynamic aggregation better reflects the average effect over the full post-treatment horizon. At the cohort level, the estimated ATT for cohort $g=40$ is 3.088 (SE $= 0.253$) against a true value of 3.556, and for cohort $g=60$ is 1.230 (SE $= 0.250$) against a true value of 1.597. Both estimates are statistically significant and directionally correct. The remaining bias ($-0.468$ for $g=40$, $-0.367$ for $g=60$) reflects both finite-sample variance, with 30 treated units per cohort, moderate estimation error is expected, and potential misspecification of the outcome regression model.
 
-The event-study aggregation confirms two key features of the DGP. First,
-all pre-treatment coefficients (event times $-58$ through $-1$) are small and
-statistically indistinguishable from zero, supporting the parallel trends
-assumption. Second, post-treatment estimates increase monotonically with event
-time from 1.054 at event time 0 to 4.788 at event time 58, consistent with
-the linearly growing treatment effects embedded in the simulation. This dynamic
-pattern is entirely missed by the single TWFE coefficient, underscoring the
-value of the event-study approach.
+The event-study aggregation confirms two key features of the DGP. First, all pre-treatment coefficients (event times $-58$ through $-1$) are small and statistically indistinguishable from zero, supporting the parallel trends assumption. Second, post-treatment estimates increase monotonically with event time from 1.054 at event time 0 to 4.788 at event time 58, consistent with the linearly growing treatment effects embedded in the simulation. This dynamic pattern is entirely missed by the single TWFE coefficient, underscoring the value of the event-study approach.
 
 ## Sun-Abraham Method
 
@@ -266,7 +247,8 @@ ggsave("fig_sa_es.png", p_sa, width = 7, height = 4)
 
 
 
-The Sun-Abraham estimator yields an overall ATT of 2.315 (SE $= 0.189$, $p < 0.001$), against a true value of 2.768, for a bias of $-0.453$. The interaction-weighted event study reveals the same dynamic structure recovered by Callaway-Sant'Anna: all pre-treatment coefficients are small and most are statistically indistinguishable from zero, and post-treatment estimates grow monotonically from 1.068 at event time 0 to 4.699 at event time 58. A handful of pre-treatment coefficients reach nominal significance, but their magnitudes are small relative to the post-treatment estimates, and no systematic trend is visible, consistent with the parallel trends assumption holding in the DGP. The close agreement between the Sun-Abraham and Callaway-Sant'Anna event-study profiles cross-validates both estimators.
+The Sun-Abraham estimator yields an overall ATT of 2.315 (SE $= 0.189$, $p < 0.001$), against a true value of 2.768, for a bias of $-0.453$. The interaction-weighted event study reveals the same dynamic structure recovered by Callaway-Sant'Anna: post-treatment estimates grow monotonically from 1.068 at event time 0 to 4.699 at event time 58. Several individual pre-period coefficients reach nominal significance (e.g., \texttt{time::-34}, $p = 0.0002$; \texttt{time::-11}, $p = 0.001$). However, with 59 pre-period coefficients estimated simultaneously, approximately three false rejections are expected at the 5\% level under the null by chance alone. The significant pre-period estimates are scattered across the event-time window with no systematic trend, and their magnitudes ($|estimate| < 0.81$) are small relative to the post-treatment estimates which range from 1.07 to 4.70. We interpret these as noise rather than evidence of pre-existing trends. The close agreement between the Sun-Abraham and Callaway-Sant'Anna event-study profiles cross-validates both estimators.
+
 
 ## Overlay Event-Study Comparison
 
@@ -380,22 +362,7 @@ results_table
 ```
 
 
-This table summarizes the ATT estimates across all three methods against the known
-true values. At the aggregate level, all three estimators underestimate the true
-ATT of 2.768, with biases of $-0.489$ (TWFE), $-0.453$ (Sun-Abraham), and
-$-0.427$ (Callaway-Sant'Anna). The differences in overall bias are modest,
-reflecting the fact that aggregate estimates obscure the heterogeneity across
-cohorts. The key distinction emerges at the cohort level, where
-Callaway-Sant'Anna recovers estimates of 3.088 for cohort $g=40$ and 1.230 for
-cohort $g=60$, both statistically significant and directionally correct relative
-to the true values of 3.556 and 1.597 respectively. TWFE and Sun-Abraham do not
-produce cohort-specific aggregates in this form. The remaining bias in the CS
-cohort estimates ($-0.468$ and $-0.367$) is attributable to finite-sample
-estimation error rather than a failure of identification, as the pre-trend tests
-confirm the parallel trends assumption holds. Overall, the table illustrates that
-while all methods recover the broad direction of the treatment effect, only
-Callaway-Sant'Anna reveals the substantial heterogeneity across adoption cohorts
-that TWFE obscures.
+This table summarizes the ATT estimates across all three methods against the known true values. At the aggregate level, all three estimators underestimate the true ATT of 2.768, with biases of $-0.489$ (TWFE), $-0.453$ (Sun-Abraham), and $-0.427$ (Callaway-Sant'Anna) under simple aggregation. However, the CS dynamic aggregation yields a bias of only $-0.130$, substantially closer to the truth, as it upweights later event-time cells where treatment effects are larger. The key distinction across methods emerges at the cohort level, where Callaway-Sant'Anna recovers estimates of 3.088 for cohort $g=40$ and 1.230 for cohort $g=60$, both statistically significant and directionally correct relative to the true values of 3.556 and 1.597 respectively. TWFE produces a single pooled coefficient and cannot decompose effects by cohort. Sun-Abraham, while recovering a similar overall ATT of 2.315 and correctly tracing the dynamic event-study profile, does not natively aggregate to cohort-specific ATTs in the same form as CS. Overall, the table illustrates that while all methods recover the broad direction of the treatment effect, only Callaway-Sant'Anna reveals the substantial heterogeneity across adoption cohorts that TWFE obscures.
 
 ## CS Cohort-Specific ATT Plot
 
